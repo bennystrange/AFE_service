@@ -118,15 +118,19 @@ import bitbangio                       # allows any 3 pins to become a spi bus
 import analogio
 import time
 import rtc                             # allows setting time.time() start time
-import adafruit_datetime as dt 
+#import adafruit_datetime as dt 
 import supervisor                      # access to millisecond timing
 supervisor.runtime.autoreload = False  # set False to prevent CIRCUITPY autoreload
+import gc
 
 #
 # ----------------------------------
 #     GLOBALS
 # ----------------------------------
 #
+
+telemetry_due = False
+
 USE_MINICOM = False     # set True for uart delays for slower host
 g_human_f = False       # set True for echo and prompt, needs "quit" to exit console
                         # if using afecmds.py then > afe send "quit"
@@ -534,6 +538,11 @@ odrDictList = [ODR_OFFdct,    ACC_1_6_HZdct, GYR_6_5_HZdct,  ODR_12_5_HZdct,
                ODR_416_HZdct, ODR_833_HZdct, ODR_1660_HZdct, ODR_3330_HZdct, 
                ODR_6660_HZdct]
 
+
+#
+# Envokes telemetry_due every 60s to signal the periodic telemetry dump
+#
+telemetry_timer = supervisor.ticks_ms()
 
 # ----------------------
 # params for init_imu
@@ -1217,12 +1226,13 @@ def get_all_tps(debug_f):
   #
   # note: functions write to globals
   #
-  get_mag_tp(print_f=debug_f)   # print magnetometr temperature
+  mag_temp = get_mag_tp(print_f=debug_f)   # print magnetometr temperature
 
-  get_sw_tp(print_f=debug_f)    # print switcher temperature
+  sw_temp = get_sw_tp(print_f=debug_f)    # print switcher temperature
 
-  get_imu_tp(print_f=debug_f)   # print imu temperature
+  imu_temp = get_imu_tp(print_f=debug_f)   # print imu temperature
 
+  return mag_temp, imu_temp, sw_temp
 # end get_all_tps
 #
 #
@@ -1341,7 +1351,7 @@ def NMEA_to_RTC(nmea_str):
   global g_rtc_save
 
   rtcTime = None
-  debug_f = True     # print useful info
+  debug_f = False     # print useful info
   verify_f = True    # print time read vs time set
   err_f = False
 
@@ -1469,6 +1479,9 @@ def send_telem(debug_f=False):
       # end else not error   
     # endif time to send
   # endif USE_IMU
+
+  #prefix = "$TEMP"
+  #uart0.write(prefix + str(get_sw_tp()) + "\r\n")
 
   return any_err_f
 
@@ -4225,7 +4238,6 @@ def process_fifo(count=1,            # count of minimum searches
       if (rdy_f):
         ii = 0
         while (ii < tag_cnt):     # inner loop
-
           err_f,theTag,acc_f,gyr_f,temp_f = read_fifo_tag()
           if (not err_f):
             err_f,dataList=read_fifo_data(theTag)  
@@ -5498,6 +5510,25 @@ def send_NMEA_err(cmd_code,err_code,wait_f=False):
 #
 # -----------------------------------------------------
 #
+
+def send_telemetry_log():
+  
+  switch_temp = get_sw_tp()
+  print(switch_temp)
+  uart0.write("$START")
+  uart0.write(switch_temp)
+  uart0.write()
+  uart0.write()
+  uart0.write("$STOP\r\n")
+
+def do_nmea_command(nmea_string):
+
+  if True:
+      print("READ NMEA As: ", nmea_string)
+      uart0.write(nmea_string + "\r\n")
+      pass
+
+'''
 def do_console(count,              # outer loop count
                tilda_f = False,    # switch from low overhead poll to full control
                instru_f=False,     # debug timing
@@ -5793,17 +5824,22 @@ def do_console(count,              # outer loop count
 #
 # -----------------------------------------------------
 #
+'''
 def run_mode(mode,           # the vector
              count,          # outer loop count
              instru_f=False, # enable instrumentation
              extra_f =False, # extra flag
              debug_f=False): # used to print once
+  global telemetry_due
+  global telemetry_timer
   global USE_FIFO
   global USE_MINICOM
   ret1 = None
   ret2 = None
   ret3 = None
   cnt_iter = 0
+
+  nmea_string = ""
                       # -------------------------------------------
   minimal_f = True    # if true, then print top of loop timestamp
                       # if false, then be very quiet in this loop
@@ -6180,6 +6216,86 @@ def run_mode(mode,           # the vector
     ret1 = False
     ret2 = msg_cnt
 
+
+  elif (mode == 13):                 # VLA Experiment 2025
+
+    run_mode(3,128,debug_f=False)    #  acc tare, debug = dump values
+    run_mode(4,64,debug_f=False)     #  gyro tare, debug = dump values
+
+    mag_temp, imu_temp, sw_temp = get_all_tps(debug_f=False)
+    send_telem(debug_f=debug_f)
+    uart0.write("$TEMPS," + str(mag_temp) + "," + str(imu_temp) + "," + str(sw_temp) + "\r\n")
+    print("BWW INITIAL TELEMETRY DUMP")
+
+    while 1:
+      line = uart0.readline()
+      if line:
+        lineStr = line.decode()
+
+        #                                  # ----------------------
+        #                                  # NMEA command vectors
+        #                                  # -----------------------
+
+        if (lineStr[0:6] == "$PMITT"):     
+          err_code,cmd_code,extra = handle_time_cmd(lineStr)  # set time         
+          if (err_code != 0):
+            send_NMEA_err(cmd_code,err_code)       # send error message
+          else:
+            send_NMEA_ok(cmd_code,extra)           # send success message
+          # end else success
+        elif (lineStr[0:6] == "$PMITR"):     
+          err_code, cmd_code, extra = handle_rate_cmd(lineStr)   # set telemetry rate 
+          if (err_code != 0):
+            send_NMEA_err(cmd_code,err_code) # send error message
+          else:
+            send_NMEA_ok(cmd_code,extra)  # send success message
+          # end else success
+        #                     #0123456
+        elif (lineStr[0:7] == "$PMITMG"):     # set or query magnetometer parameters 
+          #
+          # expected 2nd param is "S" or "?"
+          #
+          err_code,cmd_code,qresp = handle_mag_cmd(lineStr,lineStr[7])
+          if (err_code == 0):
+            send_NMEA_ok(cmd_code,qresp)
+          else:
+            send_NMEA_err(cmd_code,err_code)    
+          # end else handle error
+        #                     #0123456
+        elif (lineStr[0:7] == "$PMITIM"):     # set or query imu parameters 
+          #
+          # expected 2nd param is "U" or "?"
+          #
+          err_code,cmd_code,qresp = handle_imu_cmd(lineStr,lineStr[7])
+          if (err_code == 0):
+            send_NMEA_ok(cmd_code,qresp)
+          else:
+            send_NMEA_err(cmd_code,err_code)    
+          # end else handle error
+          #                  #012345
+        elif ((lineStr[0:6] == "$PMITM") or (lineStr[0:6] == "$PMITX")): # 'M' or 'X" for MAX, XTn, XXn
+          #
+          # expected 2nd param is "A" or "T" or "R" followed by n=1..2|4 followed by optional '?'
+          #
+          err_code,cmd_code,qresp = handle_max_cmd(lineStr,lineStr[5:9])  # 'AX[?]', 'Tn[?]' 'Rn[?]'
+          print("MAX CMD DETECTED")
+          if (err_code == 0):
+            send_NMEA_ok(cmd_code,qresp)
+          else:
+            send_NMEA_err(cmd_code,err_code)    
+          # end else handle error
+
+        '''
+        if supervisor.ticks_ms() - telemetry_timer >= 60000:   #  dump all telemetry periodically
+          telemetry_timer = supervisor.ticks_ms()
+          mag_temp, imu_temp, sw_temp = get_all_tps(debug_f=False)
+          print(mag_temp, imu_temp, sw_temp)
+          uart0.write("$TEMPS," + str(mag_temp) + "," + str(imu_temp) + "," + str(sw_temp) + "\r\n")
+          send_telem(debug_f=debug_f)                   #  TEMPORARY
+          print("BWW 60s TELEM DUMP")                          #  TEMPORARY
+'''
+      time.sleep(0.005)
+
   # end elif
 
   if (instru_f or mode_f):
@@ -6294,7 +6410,9 @@ def my_main():
 
   # run_mode(11,10,debug_f=False,instru_f=True)    # forward commands thru GNSS1
 
-  run_mode(12,-1,instru_f=False,debug_f=False)   # executive loop
+  # run_mode(12,-1,instru_f=False,debug_f=False)   # executive loop
+
+  run_mode(13,-1,instru_f=False,debug_f=False)     # VLA experiment 2025
 
 # end my_main
 
