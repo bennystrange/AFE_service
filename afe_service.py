@@ -10,16 +10,16 @@
 #   open_port                
 #   log_telemetry
 #   ctrlc
-#   
-#
-#
-#
-#
-#
-#
-#
-#
-#
+#   print_help
+#   parse_command_line
+#   reduce
+#   xor
+#   eval_packet
+#   add_cksum
+#   write_max
+#   get_reg_states
+#   update_state
+#   main_loop
 #
 # --------------------------
 
@@ -269,7 +269,6 @@ def write_max(block, channel, index, bit):
     if line:
         print(line.decode().strip())
         return
-
 
 
 
