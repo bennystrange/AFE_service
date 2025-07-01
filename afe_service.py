@@ -1,3 +1,4 @@
+# afe_service_passive.py
 #
 # MIT Haystack Observatory
 # Ben Welchman 06-23-2025
@@ -17,127 +18,218 @@
 #   eval_packet
 #   add_cksum
 #   write_max
-#   get_reg_states
-#   update_state
+#   request_reg_states
 #   main_loop
 #
 # --------------------------
 
-import serial
+import os
 import time
-import pathlib
+import socket
+import threading
+import serial
 import datetime
 import signal
 import sys
-import argparse
 import numpy as np
+import csv
 
-uart_port = '/dev/ttyUSB0'
-uart_baud = 921600
-telem_tag = '$COM,'
+SOCKET_PATH = '/tmp/afe_service.sock'
 
-G_INITIALIZED = False
+uart_port0 = '/dev/ttyUSB0'
+uart_port1 = '/dev/ttyUSB1'
+uart_port2 = '/dev/ttyGNSS1'
+uart_baud =  460800 # formerly 921600, changed for GPSD requirements
+timeout = 1.5    #1.5
+global rate
 
-# Default register states for MAX7317ATE+ expanders
-#
-# !! FOR VLA EXPERIMENT 2025 EXT ANTENNA DEFAULT CHANGED !!
-#
-#                   P 0 1 2 3 4 5 6 7 8 9 
-CTRL_MAIN_DEFAULT   = [1,1,1,1,0,0,0,1,1,0]     # OLD DEFAULT = [1,1,1,1,0,0,0,1,1,1]
+rate = 60
+global last_write
+last_write = 0.0
+debounce = 1 # IMPORTANT!!
 
-#                   P 0 1 2 3 4 5 6 7 8 9 
-CTRL_TX_DEFAULT    = [0,1,1,0,0,0,0,0,0,0]
+uart = serial.Serial(uart_port0, uart_baud, timeout=timeout)
 
-#                   P 0 1 2 3 4 5 6 7 8 9 
-CTRL_RX_DEFAULT    = [0,1,1,1,0,0,0,0,0,0]  
+#For debouncing
+def write_uart(msg):
+  global last_write
+  now = time.monotonic()
 
+  while now - last_write < debounce:
+    now = time.monotonic()
+    time.sleep(0.01)
 
-if not G_INITIALIZED:
-  g_ctrl_main = CTRL_MAIN_DEFAULT.copy()
+  uart.write(msg)
+  last_write = now
 
-  g_ctrl_tx1 = CTRL_TX_DEFAULT.copy()
-  g_ctrl_tx2 = CTRL_TX_DEFAULT.copy()
+class Telemetry:
+    
+    def __init__(self):
+        self.telem = []
+        self.registers = []
 
-  g_ctrl_rx1 = CTRL_RX_DEFAULT.copy()
-  g_ctrl_rx2 = CTRL_RX_DEFAULT.copy()
-  g_ctrl_rx3 = CTRL_RX_DEFAULT.copy()
-  g_ctrl_rx4 = CTRL_RX_DEFAULT.copy()
+    def add_telem(self, data):
+        self.telem.append(data)
 
-  g_reg_map_tx = {1: g_ctrl_tx1,
-                  2: g_ctrl_tx2}
+    def add_registers(self, data):
+        self.registers = data
 
-  g_reg_map_rx = {1: g_ctrl_rx1,
-                  2: g_ctrl_rx2,
-                  3: g_ctrl_rx3,
-                  4: g_ctrl_rx4}
+    def request_telem(self):
+
+      self.telem.clear()
+
+      msg_draft = "$TELEM?*"
+      msg = add_cksum(msg_draft)
+
+      write_uart(msg.encode())
+
+      while self.size() < 7:
+        
+        line = uart.readline()
+
+        if line:
+          line = line.decode()
+
+          try: 
+            if (line[1] == 'G') or (line[5] in ('T', 'M', 'H', 'A', 'G')):
+              self.add_telem(line)
+            line = None
+          except:
+            line = None     
+
+    def size(self):
+        return len(self.telem)
+    
+    def print(self):
+
+      self.request_telem()
+
+      request_reg_states()
+
+      return np.stack(self.telem, self.registers)
+    
+    def log(self):
+        
+        self.request_telem()
+
+        if len(self.registers) == 0:
+          request_reg_states()
+        
+        ts = datetime.datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
+        filename = f"mep-telemetry-log_{ts}.csv"
+
+        #while
+
+        with open(filename, "w", newline="", encoding="utf-8") as telem_csv:
+          writer = csv.writer(telem_csv)
+          for i in range (7):
+            try:
+              line = self.telem[i].split('*')[0]
+              line = line.split(',')
+              writer.writerow(line)
+            except IndexError as e:
+              print("Index Error on: ", line)
+            
+#          writer.writerow(<tuner>) # ADD TUNER TELEM HERE
+
+          for row in range(7):
+
+            if row == 0:
+              line = ["MAINREG"]
+
+            elif row in (1, 2):
+              idx = str(row)
+              line = ["TX" + idx + "REG"]
+
+            elif row in (3, 4, 5, 6):
+              idx = str(row - 2)
+              line = ["RX" + idx + "REG"]
+
+            for column in range(10):
+              state = self.registers[row][column]
+              line.append(state)
+            
+            writer.writerow(line) 
+            line = []
+        
+        print(self.registers)
+        print(np.stack(self.telem))
+        print("Telemetry logged at: ", filename) # /data/metadata
+
+global_telemetry = Telemetry()
+
+def handle_commands(conn):
+
+  global rate
   
-  G_INITIALIZED = True
+  raw = conn.recv(1024)
+  if not raw:
+    conn.close()
+    return
+  
+  command = raw.decode('utf-8', errors='ignore').split()
+
+  block, channel, addr, bit = map(int, command)
+
+  if block in (0, 1, 2):          # Instruction is to write a register
+    write_max(block, channel, addr, bit)
+    request_reg_states()
+    conn.sendall(b"AFE Controls Updated\n")
+    global_telemetry.log()
+
+  elif block == 3:
+
+    array = global_telemetry.print()
+    msg = array.tobytes()
+    print(msg)                                #    NEED TO FIX
+    conn.sendall(b"Placeholder\n")
+
+  elif block == 4:
+    
+    global_telemetry.log()
+    conn.sendall(b"Telemetry logged\n")
+
+  elif block == 5:
+    rate = channel
+    threading.Timer(rate-2, tick).start()
+    str_rate = str(channel)
+    print(rate)
+    conn.sendall(b"Telemetry log period updated")
+
+  conn.close()
+
+def start_command_server():
+  
+  try:
+    os.remove(SOCKET_PATH)
+  except OSError:
+    pass
+  
+  server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  server.bind(SOCKET_PATH)
+  server.listen(1)
+
+  while True:
+    conn, _ = server.accept()
+    threading.Thread(target=handle_commands, args=(conn,), daemon=True).start()
 
 def open_port(port, timeout):
   uart = serial.Serial(port, uart_baud, timeout=timeout)
   return uart
 
-def log_telemetry(nmea_string):
-  
-  print("Message received: ", nmea_string)
-
 def ctrlc(signal, frame):
 
         sys.exit(0)
 
-def print_help():
-  msg = "\nUsage:\n\n"
-  msg = msg + ">> afe_service.py  [-h]  [-a <0/1>]  [-i <channel> <0,1>]  [t]\n\n"
-  msg = msg + "  -h, --help         Show this help message and exit\n"
-  msg = msg + "  -a, --antenna      GNSS Antenna Select <0/1> (Internal/External)\n"
-  msg = msg + "  -i, --inputrf      RF Input select <channel> (1,2,3,4) <0/1/> (Internal/External)\n"
-  msg = msg + "  -t, --telemetry    Log and print current telemetry\n"
-  print(msg)
-
-def parse_command_line():
-    
-    error_flag = False
-    #
-    # Note:
-    #       Using the the same argparse variable for the 
-    #       TCP port and port for serial device and baud rate 
-    #       will work until both need to be supported at the same time
-    #
-    parser = argparse.ArgumentParser(add_help=False)
-
-    parser.add_argument("-h", "--help", action="store_true", dest="help_flag")
-
-    parser.add_argument("-a", "--antenna", choices=["0","1"])
-   
-    parser.add_argument("-i", "--inputrf", nargs=2, choices=["0","1","2","3","4"]) 
-
-    parser.add_argument("-t", "--telemetry", action="store_true")
-
-
-    (args,unknowns) = parser.parse_known_args()
-
-    if args.help_flag:
-      print_help()
-
-    if (len(unknowns) != 0):
-      print("Unknown options:", unknowns)
-      print_help()
-      error_flag = True
-
-    return error_flag, args
-
-def reduce(function, iterable, initializer=None):
+def reduce(iterable, initializer=None):
     it = iter(iterable)
     if initializer is None:
         value = next(it)
     else:
         value = initializer
     for element in it:
-        value = function(value, element)
+        value = value ^ element
     return value
-
-def xor(a,b):
-  return a^b
 
 def eval_packet(packet,gen_cksm_f=False,debug_f=False):
      err_code = 0 
@@ -191,7 +283,7 @@ def eval_packet(packet,gen_cksm_f=False,debug_f=False):
      # endif not error
       
      if (err_code == 0):
-       calculated_checksum = reduce(xor, (ord(s) for s in nmeadata), 0)
+       calculated_checksum = reduce((ord(s) for s in nmeadata), 0)
        if (checksum == calculated_checksum):
          if (debug_f):
            print("success,checksum=",hex(checksum),                                   
@@ -240,40 +332,40 @@ def add_cksum(pkt_in):
 
   return packet_out
 
-def write_max(block, channel, index, bit):
+def write_max(block, channel, addr, bit):
 
   msg_draft = "$PMIT"
 
-  if block == "main":
+  if block == 0:
     msg_draft += "MAX"
 
-  elif block == "tx":
+  elif block == 1:
     msg_draft += "XT"
     msg_draft += str(channel)
 
-  elif block == "rx":
+  elif block == 2:
     msg_draft += "XR"
     msg_draft += str(channel)
 
   else:
     return 0
   
-  msg_draft += "," + str(index) + "," + str(bit) + "*"
+  msg_draft += "," + str(addr) + "," + str(bit) + "*"
   msg = add_cksum(msg_draft)
+
   uart.write(msg.encode())
-  print("writing nmea msg: " + msg)
 
+  print("Writing to MAX: " + msg)
 
-  while 1:
-    line = uart.readline()
-    if line:
-        print(line.decode().strip())
-        return
+  try:
+    uart.readline()
+  except:
+    pass
 
+  return
 
+def request_reg_states():
 
-def get_reg_states():
-   
   main_reg = []
   
   tx1_reg = []
@@ -284,19 +376,19 @@ def get_reg_states():
   rx3_reg = []
   rx4_reg = []
 
-  line = None
-
   msg_draft = "$PMITMA?*"
   msg = add_cksum(msg_draft)
-  uart.write(msg.encode())
+  write_uart(msg.encode())
+
+  line = None
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      print(line)
-      for i in range(14, 33, 2):
-        main_reg.append(line[i])
+    line = line.decode()
+    print("LINE:")
+    print(line)
+    for i in range(14, 33, 2):
+      main_reg.append(line[i])
 
   line = None
 
@@ -306,10 +398,9 @@ def get_reg_states():
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        tx1_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      tx1_reg.append(line[i])
 
   line = None
 
@@ -319,23 +410,21 @@ def get_reg_states():
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        tx2_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      tx2_reg.append(line[i])
 
   line = None
-  
+
   msg_draft = "$PMITXR1?*"
   msg = add_cksum(msg_draft)
   uart.write(msg.encode())
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        rx1_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      rx1_reg.append(line[i])
 
   line = None
 
@@ -345,23 +434,20 @@ def get_reg_states():
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        rx2_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      rx2_reg.append(line[i])
 
   line = None
-
   msg_draft = "$PMITXR3?*"
   msg = add_cksum(msg_draft)
   uart.write(msg.encode())
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        rx3_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      rx3_reg.append(line[i])
 
   line = None
 
@@ -371,70 +457,53 @@ def get_reg_states():
 
   while line is None:
     line = uart.readline()
-    if line:
-      line = line.decode()
-      for i in range(14, 33, 2):
-        rx4_reg.append(line[i])
+    line = line.decode()
+    for i in range(14, 33, 2):
+      rx4_reg.append(line[i])
+
+  line = None
 
   reg_list = main_reg, tx1_reg, tx2_reg, rx1_reg, rx2_reg, rx3_reg, rx4_reg
+  global_telemetry.add_registers(np.stack(reg_list))
 
-  return(np.stack(reg_list))
+  return
 
-def update_state(args):
+def tick():
 
-  if args.antenna:
-    antenna_int = int(args.antenna)
-    write_max("main", -1, 5, antenna_int)
+  global rate
 
-  if args.inputrf:
-    channel, bit = args.inputrf
-    channel_int = int(channel)
-    bit_int = 1 - int(bit)
-    write_max("rx", channel_int, 1, bit_int)
+  print("Periodic log:")
+  global_telemetry.log()
+  threading.Timer(rate-0.3, tick).start() #rate offset will need to vary as the script is updated, likely rate -1
 
-def main_loop():
+def main():
 
-  reg_states = get_reg_states()
-  print("Reg States:")
-  print(reg_states)
+  global rate
 
-  while True:
-    line = uart.readline()
-    if line:
-      print(line.decode().strip())
+  signal.signal(signal.SIGINT, ctrlc) # for control c
+
+  threading.Thread(target=start_command_server, daemon=True).start()
+
+  try:
+    uart = open_port(uart_port0, timeout)
+    print("UART initialized at", uart_port0)
+  except:
+    try:
+      uart = open_port(uart_port1, timeout)
+      print("UART initialized at", uart_port1)
+    except:
+      try:
+        uart = open_port(uart_port2, timeout)
+        print("UART initialized at", uart_port2)
+      except:
+        print("Failed to initialize UART")
+        sys.exit()
+
+  print("Initial log:")
+  global_telemetry.log()
+
+  threading.Timer(rate, tick).start()
   
-  #telemetry = get_telemetry()
-
-  #log_telemetry(reg_state, telemetry)
-
-  #print(telemetry)
+  #while True:
 
 if __name__ == '__main__':
-
-    err_f = False
-
-    signal.signal(signal.SIGINT, ctrlc) # for control c
-
-    try:
-      uart = open_port(uart_port, 1)
-      print("UART initialized at", uart_port)
-    except:
-      print("Failed to initialize UART")
-      sys.exit()
-
-    error_flag, args = parse_command_line() # parse command line options
-
-    if (error_flag):
-      sys.exit()
-
-    print(args)
-
-    if (len(sys.argv) > 1):
-      update_state(args)
-
-    main_loop()
-
-
-
-    #print(g_ctrl_afe)
-    #print(g_ctrl_rx1)
