@@ -1,4 +1,8 @@
 #
+#!/usr/bin/env python3
+#
+# afe.py
+#
 # MIT Haystack Observatory
 # Ben Welchman 07-01-2025
 #
@@ -27,7 +31,6 @@ def send_command(block, channel, addr, bit):
       print(reply)
 
     return 
-
 
 
 def print_help():
@@ -62,7 +65,6 @@ def print_help():
   msg = msg + "     Register value to set: 0,1\n"
   
   print(msg)
-
 
 
 def parse_command_line():
@@ -101,7 +103,6 @@ def parse_command_line():
       error_flag = True
 
     return error_flag, args
-
 
 
 def update_reg_states(args):
@@ -198,7 +199,6 @@ def update_reg_states(args):
   return block, channel, addr, value
 
 
-
 def main():
    
   error_flag, args = parse_command_line() # parse command line options
@@ -214,7 +214,6 @@ def main():
     print_help()
 
   sys.exit()
-
 
 
 if __name__ == '__main__':
