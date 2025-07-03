@@ -1,7 +1,9 @@
-# afe_service_passive.py
+#!/usr/bin/env python3
+#
+# afe_service.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 06-23-2025
+# Ben Welchman 06-23-2025 -- 07-03-2025
 #
 
 # --------------------------
@@ -28,7 +30,7 @@ import time
 import socket
 import threading
 import serial
-import datetime
+from datetime import datetime, timezone
 import signal
 import sys
 import numpy as np
@@ -36,19 +38,16 @@ import csv
 
 SOCKET_PATH = '/tmp/afe_service.sock'
 
-uart_port0 = '/dev/ttyUSB0'
-uart_port1 = '/dev/ttyUSB1'
-uart_port2 = '/dev/ttyGNSS1'
+uart_port = '/dev/ttyGNSS1control' # for MEPs updated after 07-01-2025, otherwise change as needed
 uart_baud =  460800 # formerly 921600, changed for GPSD requirements
-timeout = 1.5    #1.5
+timeout = 1.0    # increase to 1.5 for desperate debugging
 global rate
 
 rate = 60
 global last_write
 last_write = 0.0
-debounce = 1 # IMPORTANT!!
+debounce = 1 # increase to 2 for desperate debugging
 
-uart = serial.Serial(uart_port0, uart_baud, timeout=timeout)
 
 #For debouncing
 def write_uart(msg):
@@ -67,6 +66,7 @@ class Telemetry:
     def __init__(self):
         self.telem = []
         self.registers = []
+        self.NMEAtime = 0
 
     def add_telem(self, data):
         self.telem.append(data)
@@ -78,24 +78,36 @@ class Telemetry:
 
       self.telem.clear()
 
+      uart.readall()
+
       msg_draft = "$TELEM?*"
       msg = add_cksum(msg_draft)
 
       write_uart(msg.encode())
 
-      while self.size() < 7:
+      msg_end = False
+
+      while msg_end == False:
         
         line = uart.readline()
 
         if line:
-          line = line.decode()
+          lineStr = line.decode()
+          print(lineStr)
 
           try: 
-            if (line[1] == 'G') or (line[5] in ('T', 'M', 'H', 'A', 'G')):
-              self.add_telem(line)
+            if (lineStr[1] == 'G') or (lineStr[5] in ('T', 'M', 'H', 'A', 'G')):
+              self.add_telem(lineStr)
             line = None
           except:
-            line = None     
+            line = None
+
+          if (lineStr[0:8] == "$PMITGYR"):
+            if "," not in lineStr[9:19]:
+              self.NMEAtime = int(lineStr[9:19])
+            else:
+              self.NMEAtime = int(datetime.now(timezone.utc).timestamp())
+            msg_end = True  
 
     def size(self):
         return len(self.telem)
@@ -110,19 +122,34 @@ class Telemetry:
     
     def log(self):
         
+        global new_run
+
+        global path
+        
         self.request_telem()
 
         if len(self.registers) == 0:
           request_reg_states()
         
-        ts = datetime.datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
-        filename = f"mep-telemetry-log_{ts}.csv"
+        t = datetime.fromtimestamp(self.NMEAtime, tz=timezone.utc)
+        timestamp = t.strftime("%Y-%m-%d_%H:%M:%S")
+
+        if new_run is True:
+          base = "/data"
+          folder_name = f"mep-telemetry-log_{timestamp}"
+          path = os.path.join(base, folder_name)
+          os.makedirs(path, exist_ok=True)
+          new_run = False
+
+        filename = f"telemetry_{timestamp}.csv"
+
+        full_path = os.path.join(path, filename)
 
         #while
 
-        with open(filename, "w", newline="", encoding="utf-8") as telem_csv:
+        with open(full_path, "w", newline="", encoding="utf-8") as telem_csv:
           writer = csv.writer(telem_csv)
-          for i in range (7):
+          for i in range(len(self.telem)):
             try:
               line = self.telem[i].split('*')[0]
               line = line.split(',')
@@ -173,9 +200,8 @@ def handle_commands(conn):
 
   if block in (0, 1, 2):          # Instruction is to write a register
     write_max(block, channel, addr, bit)
-    request_reg_states()
-    conn.sendall(b"AFE Controls Updated\n")
     global_telemetry.log()
+    conn.sendall(b"AFE Controls Updated\n")
 
   elif block == 3:
 
@@ -212,6 +238,19 @@ def start_command_server():
   while True:
     conn, _ = server.accept()
     threading.Thread(target=handle_commands, args=(conn,), daemon=True).start()
+
+def clear_line():
+
+  count = 0
+
+  while len(uart.readline().decode()) != 0:
+    line = uart.readall()
+    print("LINE FULL:", line)
+    if count > 0:
+      uart.close()
+      print("soft rebooting")
+      main()
+    count += 1
 
 def open_port(port, timeout):
   uart = serial.Serial(port, uart_baud, timeout=timeout)
@@ -357,11 +396,6 @@ def write_max(block, channel, addr, bit):
 
   print("Writing to MAX: " + msg)
 
-  try:
-    uart.readline()
-  except:
-    pass
-
   return
 
 def request_reg_states():
@@ -376,6 +410,8 @@ def request_reg_states():
   rx3_reg = []
   rx4_reg = []
 
+  uart.readall()
+
   msg_draft = "$PMITMA?*"
   msg = add_cksum(msg_draft)
   write_uart(msg.encode())
@@ -385,8 +421,6 @@ def request_reg_states():
   while line is None:
     line = uart.readline()
     line = line.decode()
-    print("LINE:")
-    print(line)
     for i in range(14, 33, 2):
       main_reg.append(line[i])
 
@@ -474,30 +508,13 @@ def tick():
 
   print("Periodic log:")
   global_telemetry.log()
-  threading.Timer(rate-0.3, tick).start() #rate offset will need to vary as the script is updated, likely rate -1
+  threading.Timer(rate-1, tick).start() #rate offset will need to vary as the script is updated, likely rate -1
 
 def main():
 
   global rate
 
   signal.signal(signal.SIGINT, ctrlc) # for control c
-
-  threading.Thread(target=start_command_server, daemon=True).start()
-
-  try:
-    uart = open_port(uart_port0, timeout)
-    print("UART initialized at", uart_port0)
-  except:
-    try:
-      uart = open_port(uart_port1, timeout)
-      print("UART initialized at", uart_port1)
-    except:
-      try:
-        uart = open_port(uart_port2, timeout)
-        print("UART initialized at", uart_port2)
-      except:
-        print("Failed to initialize UART")
-        sys.exit()
 
   print("Initial log:")
   global_telemetry.log()
@@ -507,3 +524,18 @@ def main():
   #while True:
 
 if __name__ == '__main__':
+
+  global new_run
+
+  new_run = True
+
+  try:
+    uart = open_port(uart_port, timeout)
+    print("UART initialized at", uart_port)
+  except:
+    print("Failed to initialize UART")
+    sys.exit()
+
+  threading.Thread(target=start_command_server, daemon=True).start()
+
+  main()
