@@ -135,7 +135,7 @@ class Telemetry:
         timestamp = t.strftime("%Y-%m-%d_%H:%M:%S")
 
         if new_run is True:
-          base = "/data"
+          base = "/data/telemetry_log"
           folder_name = f"mep-telemetry-log_{timestamp}"
           path = os.path.join(base, folder_name)
           os.makedirs(path, exist_ok=True)
