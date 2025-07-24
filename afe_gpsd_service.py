@@ -34,7 +34,8 @@
 # - fix print functionality
 # - add cleanups and failsafe for gpsd not connecting
 
-# >> sudo gpsd --nowait --badtime --readonly --speed 460800 -D 3 /var/run/gpsd.sock /dev/ttyGNSS1
+# >> sudo gpsd -n -r -s 460800 -D 3 -F /var/run/gpsd.sock /dev/ttyGNSS1
+
 
 import os
 import time
@@ -240,72 +241,56 @@ def start_command_server():
 
 def gpsd_monitor():
 
-  while True:
-    buffer = b""
-    try:
-      chunk = gpsd_in.recv(1024)
-      print("Chunk: ", chunk)
-      if not chunk:
-        break
-      buffer += chunk
-      while b'\n' in buffer:
-        line, buffer = buffer.split(b'\n', 1)
-        line = line.strip().decode("ascii", errors="ignore")
+  msg = gpsd_in.makefile('r', encoding='ascii', newline='\n')
+  _ = msg.readline()
 
-        print("Line Received: ", line)
+  for line in msg:                  
+    line = line.strip()        
 
-        if line.startswith('$NEWGPS'):
-          global_telemetry.gps.clear()
+    print("Line Received: ", line)
+          
+    if line.startswith('$NEWGPS'):
+      global_telemetry.gps.clear()
 
-        elif line.startswith('$NEWTEL'):
-          global_telemetry.telem.clear()
+    elif line.startswith('$NEWTEL'):
+      global_telemetry.telem.clear()
 
-        elif line.startswith('$NEWREG'):
-          global_telemetry.registers.clear()
+    elif line.startswith('$NEWREG'):
+      global_telemetry.registers.clear()
 
-        elif line.startswith('$G'):
-          global_telemetry.add_gps(line)
+    elif line.startswith('$G'):
+      global_telemetry.add_gps(line)
 
-          if line.startswith('$GNRMC'):
-            error, RTCtime = NMEA_to_RTC(line)
-            if not error:
-              global_telemetry.RTCtime = RTCtime
+      if line.startswith('$GNRMC'):
+        error, RTCtime = nmea_to_epoch(line)
+        if not error:
+          global_telemetry.RTCtime = RTCtime
 
-        elif line.startswith('$PMIT') and '$PMITSR' not in line:
-          global_telemetry.add_telem(line)
+    elif line.startswith('$PMIT') and '$PMITSR' not in line:
+      global_telemetry.add_telem(line)
 
-        elif line.startswith('$PMITSR'):
-          row = []
-          for i in range(14, 33, 2):
-            row.append(i)
-          global_telemetry.add_registers(row)
+    elif line.startswith('$PMITSR'):
+      row = []
+      for i in range(14, 33, 2):
+        row.append(i)
+      global_telemetry.add_registers(row)
 
-        else:
-          continue
+    else:
+      print("unidentified message")
+      continue
+            
+def ctrlc(a,b):
 
-    except:
-      time.sleep(0.005)
+  sys.exit(0)
 
-def ctrlc(signal, frame):
+def nmea_to_epoch(nmea):
 
-        sys.exit(0)
+  error = False
 
-def NMEA_to_RTC(nmea_str):
-  global g_rtc_init
-  global g_time_NMEA_f
-  global g_rtcObj
-  global g_rtc_save
-
-  rtcTime = None
-  debug_f = False     # print useful info
-  verify_f = True    # print time read vs time set
-  err_f = False
-
-  if (debug_f):
-    print("NMEA time:", nmea_str)
-  # endif debug
+  nmea_str = str(nmea)
 
   aa = nmea_str.split(",")
+
   try:
     hh = int(aa[1][0:2])
     mm = int(aa[1][2:4])
@@ -313,35 +298,14 @@ def NMEA_to_RTC(nmea_str):
     DD = int(aa[9][0:2])
     MM = int(aa[9][2:4])
     YY = int(aa[9][4:6]) + 2000
-  except Exception as eobj:
-    err_f = True             # no time values means no satellites
-    g_time_NMEA_f = False
-  else:
-    dtobj = dt.datetime(YY, MM, DD, hh, mm, ss)
-    rtcTime = dtobj._mktime()
-   
-    if (verify_f and g_rtc_init):    
-      nowTime = time.time()
-      if (rtcTime != nowTime):
-        print("NMEA rtcTime:",rtcTime,"RTC rtcTime:",nowTime)
-    # endif verify and something to verify agains
 
-    g_rtcObj.datetime = time.struct_time((dtobj.year,    # tm_year
-                                          dtobj.month,   # tm_mon
-                                          dtobj.day,     # tm_mday
-                                          dtobj.hour,    # tm_hour
-                                          dtobj.minute,  # tm_min
-                                          dtobj.second,  # tm_sec
-                                          0, # tm_wday
-                                         -1, # yday
-                                         -1)) # tm_isdst
-    #
-    g_time_NMEA_f  = True      # time has been updated 
-    g_rtc_save     = rtcTime   # saved time
-    g_rtc_init     = True      # rtc has been initialized/reset
-  # end else valid time
+    dt = datetime(YY, MM, DD, hh, mm, ss, tzinfo=timezone.utc)
+    epoch_time = int(dt.timestamp())
+    
+  except:
+    error = True
   
-  return err_f, rtcTime
+  return error, epoch_time
 
 def reduce(iterable, initializer=None):
     it = iter(iterable)
@@ -502,16 +466,23 @@ def tick():
   global_telemetry.log()
   threading.Timer(rate-1, tick).start() #rate offset will need to vary as the script is updated, likely rate -1
 
-def init_gpsd():
+def init_all():
 
   global gpsd_in
   global gpsd_out
 
   gpsd_in = socket.create_connection(("127.0.0.1", 2947))
-  gpsd_in.sendall(b'?WATCH={"enable":true,"raw":1};\n')  
+  gpsd_in.sendall(b'?WATCH={"enable":true,"json":false,"raw":1};\n') 
 
-  gpsd_out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  gpsd_out.connect("/var/run/gpsd.sock")
+  #gpsd_out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  #gpsd_out.connect("/run/gpsd.sock")
+
+  threading.Thread(target=start_command_server, daemon=True).start()
+  threading.Thread(target=gpsd_monitor, daemon=True).start()
+
+  gpsd_monitor()
+
+  print("GPSD Initialized")
 
 def main():
 
@@ -524,15 +495,13 @@ def main():
 
   threading.Timer(rate, tick).start()
 
-  #while True:
+  while True:
+    time.sleep(0.1)
 
 if __name__ == '__main__':
 
   new_run = True
 
-  init_gpsd()
-
-  threading.Thread(target=start_command_server, daemon=True).start()
-  threading.Thread(target=gpsd_monitor, daemon=True).start()
+  init_all()
 
   main()
