@@ -118,7 +118,8 @@ import bitbangio                       # allows any 3 pins to become a spi bus
 import analogio
 import time
 import rtc                             # allows setting time.time() start time
-import adafruit_datetime as dt 
+import adafruit_datetime as dt
+ 
 import supervisor                      # access to millisecond timing
 supervisor.runtime.autoreload = False  # set False to prevent CIRCUITPY autoreload
 import gc
@@ -1505,15 +1506,14 @@ def send_telem(debug_f=False):
 #
 
 def forward_nmea(wait_f       = False, # if True then wait for first char
-                 tmoSec       = 1,     # (was 5) tmo can be from many causes
-                 maxMsgCnt    = 1,     # 20 reliably returns $GNZDA if present at all
+                 tmoSec       = 8,     # (was 5) tmo can be from many causes
+                 maxMsgCnt    = 20,     # 20 reliably returns $GNZDA if present at all
                  debug_f=False):
   global uart0         # write outside, accept commands from MINICOM
   global uart1         # read ublox
   global g_uart_delay  # for minicom to not drop chars 
   global USE_MINICOM   # signals MINICOM in use
   global g_rtc_save   # for periodic update of RTC
-         
   delay_val = g_uart_delay
   err_f = False
   baseSec = time.time()           # anti-lockup seconds timer
@@ -1539,7 +1539,7 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
       if (uart1.in_waiting == 0):
         return False,0,0
       else:
-         raw_data = uart1.read(1)       
+         raw_data = uart1.read(1)  
       # end else read data
       if (debug_f):
         pass # print("type=",type(raw_data),"len=",len(raw_data),"raw_data=",raw_data)
@@ -1568,7 +1568,7 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
           continue                      #      back to top
         else:
           #   
-          nmea_string = nmea_string + theChar        
+          nmea_string = nmea_string + theChar       
           if (not cksum_f):             # test for checksum phrase
             if (theChar == '*'):        # checksum phrase start
               cksum_f = True            # prevent reentry here
@@ -1597,7 +1597,6 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
       # endif anti-lockup test
 
     # end while inner loop
-
     if (start_f and end_f):   # process a sentence
       start_f = False
       end_f   = False
@@ -1610,7 +1609,7 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
           bin_cnt = bin_cnt + 1
         elif (err_code == -4):
           ck_cnt = ck_cnt +1     # bad checksum (dropped data)
-          
+                  
       # endif
       #
       # ublox generates some bad checksums
@@ -1626,7 +1625,7 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
         #                         # ---------------
         #
         msg_cnt = msg_cnt + 1     # count messages in
-
+        
         if (USE_MINICOM):
           time.sleep(delay_val)      # add delay for minicom 
         # endif USE_MINICOM
@@ -1657,7 +1656,6 @@ def forward_nmea(wait_f       = False, # if True then wait for first char
       break  # timeout
 
     # endif anti-lockup test
-           
     if (msg_cnt == maxMsgCnt):     # check for max messages
        break
     # endif
@@ -5028,7 +5026,7 @@ def updateShadowMax(offset,srcList,dstList):
   ii = 0
   while (ii < len(srcList)):
 
-     dstList[offset +ii] = srcList[ii]
+     dstList[offset +ii] = int(srcList[ii])
 
      ii = ii + 1
 
@@ -5446,6 +5444,7 @@ def send_NMEA_ok(cmd_code,extra="0"):
 
   err_f = False    # the error is extremely unlikely
   nmea_resp = ""
+  print("CMD CODE: ", cmd_code)
  
   #
   # the tail end of the response is either 0
@@ -6225,7 +6224,7 @@ def run_mode(mode,           # the vector
 
 
     tmoSec = 8     # was 8
-    maxMsgCnt = 8  # was 8
+    maxMsgCnt = 20  # was 8
     
 
     run_mode(1,1,debug_f=False)
@@ -6242,32 +6241,62 @@ def run_mode(mode,           # the vector
     send_telem(debug_f=debug_f)
     '''
 
-    while 1:
+    while True:
       
       line = uart0.readline()
       if line:
-        lineStr = line.decode()
-        print(lineStr)
+        try:
+          lineStr = line.decode()
+          print(lineStr)
+        except UnicodeError:
+          continue
 
         #                                  # ----------------------
         #                                  # NMEA command vectors
         #                                  # -----------------------
 
-        if (lineStr[0:6] == "$TELEM"):
+        if (lineStr[0:7] == "$TELEM?"):
           
           run_mode(1,1,debug_f=False)
           run_mode(8,1,debug_f=False)
           run_mode(9,1,debug_f=False)
           do_acc(data_cnt=1,debug_f=False)
           do_gyro(data_cnt=1,debug_f=False)
-          _,_,_ = forward_nmea(tmoSec=tmoSec,           
-                                maxMsgCnt= maxMsgCnt,  
-                                debug_f=debug_f)
+
+          msg_draft = "$PTEL*"
+          _,msg = add_cksum(msg_draft) 
+          uart0.write(msg + "\r\n")
+
           send_telem(debug_f=debug_f)
           print("REQUESTED TELEM DUMP")
 
+        if (lineStr[0:5] == "$MAX?"):
 
-        if (lineStr[0:6] == "$PMITT"):     
+          regs = [
+            g_shdw_max_misc,
+            g_shdw_max_tx1,
+            g_shdw_max_tx2,
+            g_shdw_max_rx1,
+            g_shdw_max_rx2,
+            g_shdw_max_rx3,
+            g_shdw_max_rx4,]
+          
+          bitArray = []
+          
+          for reg in regs:
+            _, str = maxList2str(reg)
+            bitArray.append(str.replace(",", ""))
+          regStr = ",".join(item for item in bitArray)
+
+          print("MAX REQUESTED")
+
+          msg_draft = "$PMAX," + regStr + "*"
+          _,msg = add_cksum(msg_draft) 
+          uart0.write(msg + "\r\n")
+          print("WRITING REG: ", msg)
+
+
+        elif (lineStr[0:6] == "$PMITT"):     
           err_code,cmd_code,extra = handle_time_cmd(lineStr)  # set time         
           if (err_code != 0):
             send_NMEA_err(cmd_code,err_code)       # send error message
@@ -6314,19 +6343,21 @@ def run_mode(mode,           # the vector
           else:
             send_NMEA_err(cmd_code,err_code)    
           # end else handle error
-
-      '''
-      if supervisor.ticks_ms() - telemetry_timer >= 10000:   #  dump all telemetry periodically
+        else:
+          continue
+      
+      if supervisor.ticks_ms() - telemetry_timer >= 1000: # 1s PPS tick and GPS dump
         telemetry_timer = supervisor.ticks_ms()
-        print("forwarding NMEA")
-        _,_,_ = forward_nmea(tmoSec=tmoSec,           
-                                maxMsgCnt= maxMsgCnt,  
-                                debug_f=debug_f)
-        send_telem(debug_f=debug_f)
-        print("PERIODIC TELEM DUMP")
 
-      time.sleep(0.005)
-      '''
+        msg_draft = "$PGPS*"
+        _,msg = add_cksum(msg_draft) 
+        #uart0.write(msg + "\r\n")
+
+        _,_,_ = forward_nmea(tmoSec=tmoSec, maxMsgCnt= maxMsgCnt, debug_f=debug_f)
+
+        print("PERIODIC NMEA DUMP")
+
+      
 
   # end elif
 
