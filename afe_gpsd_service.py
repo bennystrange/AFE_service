@@ -47,6 +47,9 @@ import sys
 import numpy as np
 import csv
 
+global service_f   # False for console messages
+service_f = False  # True when running as a service
+
 SOCKET_PATH = '/tmp/afe_service.sock'
 
 global device
@@ -69,27 +72,26 @@ def send_nmea_command(cmd_str):
   hexcmd = cmd_str.encode("ascii").hex()
   message = f"&{device}={hexcmd}\n"
 
+  gpsd_out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  gpsd_out.connect("/var/run/gpsd.sock")
+
   gpsd_out.sendall(message.encode("ascii"))
-
-  # gpsd sends "OK\n" or "ERROR\n" back
-  reply = gpsd_out.recv(16).decode("ascii").strip()
-  print(reply)
-
+  
+  reply = gpsd_out.recv(1024).decode("ascii").strip()
+  
   if reply != "OK":
-    raise RuntimeError(f"gpsd error on send: {reply}")
+    raise RuntimeError(f"gpsd error on send. reply: {reply}")
+
+  gpsd_out.close
 
 class Telemetry:
 
     def __init__(self):
 
-      self.gps = []
+      self.gps = None
       self.telem = []
       self.registers = []
       self.RTCtime = None
-
-    def add_gps(self, data):
-
-      self.gps.append(data)
 
     def add_telem(self, data):
 
@@ -106,6 +108,7 @@ class Telemetry:
       msg_draft = "$TELEM?*"
       msg = add_cksum(msg_draft)
 
+      print("SENDING: ", msg)
       send_nmea_command(msg)
 
     def size(self):
@@ -113,9 +116,9 @@ class Telemetry:
 
     def print(self):
 
-      self.request_telem()
-
       request_reg_states()
+
+      self.request_telem()
 
       return np.stack(self.telem, self.registers)
 
@@ -127,8 +130,13 @@ class Telemetry:
 
         self.request_telem()
 
-        if len(self.registers) == 0:
-          request_reg_states()
+        request_reg_states()
+
+        start = time.monotonic()
+        wait = 0
+        while self.gps == None and wait < 1.5:
+          wait = time.monotonic() - start
+          time.sleep(0.01)
 
         if self.RTCtime is None:
           self.RTCtime = int(datetime.now(timezone.utc).timestamp())
@@ -136,9 +144,10 @@ class Telemetry:
         t = datetime.fromtimestamp(self.RTCtime, tz=timezone.utc)
         timestamp = t.strftime("%Y-%m-%d_%H:%M:%S")
 
-        if new_run is True:
+        if new_run is True: 
           base = "/data/telemetry_log"
-          folder_name = f"mep-telemetry-log_{timestamp}"
+          folder_name = f"TEMP{timestamp}"                  #TEMPORARY
+          #folder_name = f"mep-telemetry-log_{timestamp}"   #PERMANENT
           path = os.path.join(base, folder_name)
           os.makedirs(path, exist_ok=True)
           new_run = False
@@ -149,15 +158,39 @@ class Telemetry:
 
         with open(full_path, "w", newline="", encoding="utf-8") as telem_csv:
           writer = csv.writer(telem_csv)
+
+          print(self.gps)
+          try:
+            line = self.gps.split('*')[0]
+            line = line.split(',')
+            writer.writerow(line)
+          except IndexError:
+            print("Index Error")
+          except AttributeError:
+            print("Attribute Error")
+
+          start = time.monotonic()
+          wait = 0
+          while self.size() < 4 and wait < 0.5:
+            wait = time.monotonic() - start
+            time.sleep(0.01)
+
           for i in range(len(self.telem)):
             try:
               line = self.telem[i].split('*')[0]
               line = line.split(',')
               writer.writerow(line)
-            except IndexError as e:
+            except IndexError:
               print("Index Error on: ", line)
 
 #          writer.writerow(<tuner>) # ADD TUNER TELEM HERE
+
+          start = time.monotonic()
+          wait = 0
+  
+          while np.shape(self.registers) != (7,10) and wait < 0.5:
+            wait = time.monotonic() - start
+            time.sleep(0.01)
 
           for row in range(7):
 
@@ -173,15 +206,24 @@ class Telemetry:
               line = ["RX" + idx + "REG"]
 
             for column in range(10):
-              state = self.registers[row][column]
+              try:
+                state = self.registers[row][column]
+              except IndexError:
+                state = "n/a"
               line.append(state)
 
             writer.writerow(line)
             line = []
 
-        print(self.registers)
-        print(np.stack(self.telem))
+        if service_f == False:    
+          print(self.gps)
+          for row in self.telem:
+            print(row)
+          for row in self.registers:
+            print(row)
+
         print("Telemetry logged at: ", filename) # /data/metadata
+        print("ELAPSED TIME = " + str(time.monotonic() - start_time) + 's')
 
 global_telemetry = Telemetry()
 
@@ -244,24 +286,25 @@ def gpsd_monitor():
   msg = gpsd_in.makefile('r', encoding='ascii', newline='\n')
   _ = msg.readline()
 
-  for line in msg:                  
+  for line in msg:          
+          
     line = line.strip()        
 
     print("Line Received: ", line)
           
-    if line.startswith('$NEWGPS'):
+    if line.startswith('$PGPS'):
       global_telemetry.gps.clear()
 
-    elif line.startswith('$NEWTEL'):
+    elif line.startswith('$PTEL'):
       global_telemetry.telem.clear()
 
     elif line.startswith('$NEWREG'):
       global_telemetry.registers.clear()
 
     elif line.startswith('$G'):
-      global_telemetry.add_gps(line)
 
       if line.startswith('$GNRMC'):
+        global_telemetry.gps = line
         error, RTCtime = nmea_to_epoch(line)
         if not error:
           global_telemetry.RTCtime = RTCtime
@@ -269,11 +312,13 @@ def gpsd_monitor():
     elif line.startswith('$PMIT') and '$PMITSR' not in line:
       global_telemetry.add_telem(line)
 
-    elif line.startswith('$PMITSR'):
-      row = []
-      for i in range(14, 33, 2):
-        row.append(i)
-      global_telemetry.add_registers(row)
+    elif line.startswith('$PMAX'):
+      split = line.split(',')
+      for row in range(1,8):
+        reg_row = []
+        for col in range(10):
+          reg_row.append(int(split[row][col]))
+        global_telemetry.add_registers(reg_row)
 
     else:
       print("unidentified message")
@@ -448,13 +493,10 @@ def write_max(block, channel, addr, bit):
 def request_reg_states():
 
   global_telemetry.registers.clear()
-
-  for query in ("MA?*", "XT1?*", "XT2?*", "XR1?*", "XR2?*", "XR3?*", "XR4?*"): 
-
-    msg_draft = "$PMIT" + query
-    msg = add_cksum(msg_draft)
-    send_nmea_command(msg)
-    time.sleep(1)  # TEMPORARY, ONLY FOR DEBUGGING
+  msg_draft = "$MAX?*"
+  msg = add_cksum(msg_draft)
+  send_nmea_command(msg)
+  print("SENDING: ", msg)
 
   return
 
@@ -472,15 +514,11 @@ def init_all():
   global gpsd_out
 
   gpsd_in = socket.create_connection(("127.0.0.1", 2947))
-  gpsd_in.sendall(b'?WATCH={"enable":true,"json":false,"raw":1};\n') 
-
-  #gpsd_out = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  #gpsd_out.connect("/run/gpsd.sock")
+  gpsd_in.sendall(b'?WATCH={"enable":true, "raw":1};\n')
 
   threading.Thread(target=start_command_server, daemon=True).start()
-  threading.Thread(target=gpsd_monitor, daemon=True).start()
-
-  gpsd_monitor()
+  monitor = threading.Thread(target=gpsd_monitor, daemon=False)
+  monitor.start()
 
   print("GPSD Initialized")
 
@@ -490,15 +528,16 @@ def main():
 
   signal.signal(signal.SIGINT, ctrlc) # for control c
 
-  print("Initial log:")
+  print("Initial Log:")
+  
   global_telemetry.log()
 
   threading.Timer(rate, tick).start()
 
-  while True:
-    time.sleep(0.1)
-
 if __name__ == '__main__':
+
+  global start_time
+  start_time = time.monotonic()
 
   new_run = True
 
