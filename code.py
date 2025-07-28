@@ -15,7 +15,7 @@ while(True):
     print("Exception: ctl.my_main():",eobj)
     traceback.print_exception(eobj) 
     print("Soft reset")
-    time.sleep(10)      # allow time for reading console
+    time.sleep(1)      # allow time for reading console
   # end try/except
 # end while
 # end code.py
