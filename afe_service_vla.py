@@ -3,25 +3,33 @@
 # afe_service.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 06-23-2025 -- 07-03-2025
+# Ben Welchman 07-03-2025
 #
-
+#
+# !! LECAGY SCRIPT USED AT THE VLA EXPERIMENT 07-10-2025 !!
+# !!  NO LONGER COMPATIBLE WITH UPDATED RP2040 FIRMWARE  !!
+#
 # --------------------------
+#
+# List of Classes:
+#
+#   Telemetry
 #
 # List of Functions:
 #
-#   open_port                
-#   log_telemetry
+#   write_uart                
+#   handle_commands
+#   start_command_server
+#   clear_line
+#   open_port
 #   ctrlc
-#   print_help
-#   parse_command_line
 #   reduce
-#   xor
 #   eval_packet
 #   add_cksum
 #   write_max
 #   request_reg_states
-#   main_loop
+#   tick
+#   main
 #
 # --------------------------
 
