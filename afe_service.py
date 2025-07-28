@@ -3,9 +3,23 @@
 # afe_service.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 06-23-2025 -- 07-03-2025
+# Ben Welchman 07-28-2025
 #
 
+# --------------------------
+#
+# Dependencies:
+#
+# - GPSD must be run with:
+#   >> sudo gpsd -n -r -s 460800 -D 3 -F /var/run/gpsd.sock /dev/ttyGNSS1
+#   >> sudo systemctl start gpsd.service gpsd.socket
+#
+# --------------------------
+#
+# List of Classes:
+#
+#   Telemetry
+#
 # --------------------------
 #
 # List of Functions:
@@ -50,7 +64,7 @@ import csv
 global service_f   # False for console messages
 service_f = False  # True when running as a service
 
-SOCKET_PATH = '/tmp/afe_service.sock'
+SOCKET_PATH = '/tmp/afe_service.sock'  # Path for comms with afe.py
 
 global device
 global rate
@@ -145,7 +159,8 @@ class Telemetry:
         timestamp = t.strftime("%Y-%m-%d_%H:%M:%S")
 
         if new_run is True: 
-          base = "/data/telemetry_log"
+          base = "/data/telemetry_log/temp"                 #TEMPORARY
+          #base = "/data/telemetry_log"                     #PERMANENT
           folder_name = f"TEMP{timestamp}"                  #TEMPORARY
           #folder_name = f"mep-telemetry-log_{timestamp}"   #PERMANENT
           path = os.path.join(base, folder_name)

@@ -164,7 +164,7 @@ g_rtcObj.datetime = time.struct_time((1970, 1, 1, 0, 0, 0, 0, -1, -1))
                           # test range: 9600, 38400, 57600, 115200, 230400, 
                           #             460800,  921600, 1843200, 3686400
 UART0_BAUD = 460800      # out to world (GNSS1) 921600  
-UART1_BAUD = 3686400      # in from ublox 
+UART1_BAUD = 921600      # in from ublox 
 
 g_uart_delay = 0.2  # slow down for host device 
 
@@ -6241,8 +6241,44 @@ def run_mode(mode,           # the vector
     send_telem(debug_f=debug_f)
     '''
 
+    buf = bytearray()
     while True:
-      
+      chunk = uart1.read(1)
+      if chunk:
+        buf.extend(chunk)
+
+    # As long as we have a full CRLF-terminated sentence in buf,
+    # extract and forward one at a time, oldest first.
+      while True:
+        idx = buf.find(b'\r\n')
+        if idx < 0:
+            # no complete sentence yet
+            break
+
+        # slice out the complete line, including CRLF
+        line = buf[:idx+2]
+
+        # forward verbatim
+        uart0.write(line)
+
+        # drop it from the buffer, keep the remainder
+        buf[:] = buf[idx+2:]
+
+      #_,_,_ = forward_nmea(tmoSec=tmoSec, maxMsgCnt= maxMsgCnt, debug_f=debug_f)
+      #if supervisor.ticks_ms() - telemetry_timer >= 1000: # 1s PPS tick and GPS dump
+      #telemetry_timer = supervisor.ticks_ms()
+      buffer = bytearray()
+      chunk = uart1.read()
+      if chunk:
+        buffer.extend(chunk)
+      while True:
+          idx = buffer.find(b'\r\n')
+          if idx < 0:
+              break
+          #print(buffer[:idx+2])
+          uart0.write(buffer[:idx+2])  # include \r\n
+          buffer = buffer[idx+2:]
+    
       line = uart0.readline()
       if line:
         try:
@@ -6346,17 +6382,13 @@ def run_mode(mode,           # the vector
         else:
           continue
       
-      if supervisor.ticks_ms() - telemetry_timer >= 1000: # 1s PPS tick and GPS dump
-        telemetry_timer = supervisor.ticks_ms()
+      #if supervisor.ticks_ms() - telemetry_timer >= 1000: # 1s PPS tick and GPS dump
+       # telemetry_timer = supervisor.ticks_ms()
+      
 
-        msg_draft = "$PGPS*"
-        _,msg = add_cksum(msg_draft) 
+        #msg_draft = "$PGPS*"
+        #_,msg = add_cksum(msg_draft) 
         #uart0.write(msg + "\r\n")
-
-        _,_,_ = forward_nmea(tmoSec=tmoSec, maxMsgCnt= maxMsgCnt, debug_f=debug_f)
-
-        print("PERIODIC NMEA DUMP")
-
       
 
   # end elif
