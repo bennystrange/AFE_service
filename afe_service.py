@@ -148,9 +148,9 @@ class Telemetry:
 
         start = time.monotonic()
         wait = 0
-        while self.gps == None and wait < 1.5:
+        while self.gps == None and wait < 1.2:
           wait = time.monotonic() - start
-          time.sleep(0.01)
+          time.sleep(0.001)
 
         if self.RTCtime is None:
           self.RTCtime = int(datetime.now(timezone.utc).timestamp())
@@ -188,7 +188,7 @@ class Telemetry:
           wait = 0
           while self.size() < 4 and wait < 0.5:
             wait = time.monotonic() - start
-            time.sleep(0.01)
+            time.sleep(0.001)
 
           for i in range(len(self.telem)):
             try:
@@ -205,7 +205,7 @@ class Telemetry:
   
           while np.shape(self.registers) != (7,10) and wait < 0.5:
             wait = time.monotonic() - start
-            time.sleep(0.01)
+            time.sleep(0.001)
 
           for row in range(7):
 
@@ -305,7 +305,7 @@ def gpsd_monitor():
           
     line = line.strip()        
 
-    print("Line Received: ", line)
+    print(line)
           
     if line.startswith('$PGPS'):
       global_telemetry.gps.clear()
@@ -323,6 +323,7 @@ def gpsd_monitor():
         error, RTCtime = nmea_to_epoch(line)
         if not error:
           global_telemetry.RTCtime = RTCtime
+          print("TIME: ", global_telemetry.RTCtime)
 
     elif line.startswith('$PMIT') and '$PMITSR' not in line:
       global_telemetry.add_telem(line)
