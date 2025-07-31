@@ -6222,10 +6222,6 @@ def run_mode(mode,           # the vector
     run_mode(3,128,debug_f=debug_f)    #  acc tare, debug = dump values
     run_mode(4,64,debug_f=debug_f)     #  gyro tare, debug = dump values
 
-    tmoSec = 8     # was 8
-    maxMsgCnt = 20  # was 8
-    
-
     run_mode(1,1,debug_f=False)
     run_mode(8,1,debug_f=False)
     run_mode(9,1,debug_f=False)
@@ -6248,9 +6244,9 @@ def run_mode(mode,           # the vector
         except UnicodeError:
           continue
 
-        #                                  # ----------------------
-        #                                  # NMEA command vectors
-        #                                  # -----------------------
+        #   ----------------------
+        #   NMEA command vectors
+        #   -----------------------
 
         if (lineStr[0:7] == "$TELEM?"):
           
@@ -6342,16 +6338,10 @@ def run_mode(mode,           # the vector
           # end else handle error
         else:
           continue
-      
-      #if supervisor.ticks_ms() - telemetry_timer >= 1000: # 1s PPS tick and GPS dump
-        #telemetry_timer = supervisor.ticks_ms()
-      
-        #_,_,_ = forward_nmea(tmoSec=tmoSec, maxMsgCnt= maxMsgCnt, debug_f=debug_f)
 
         #msg_draft = "$PGPS*"
         #_,msg = add_cksum(msg_draft) 
         #uart0.write(msg + "\r\n")
-      
 
   # end elif
 

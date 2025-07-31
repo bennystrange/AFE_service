@@ -3,7 +3,7 @@
 # afe_service.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 07-28-2025
+# Ben Welchman 07-30-2025
 #
 
 # --------------------------
@@ -13,6 +13,7 @@
 # - GPSD must be run with:
 #   >> sudo gpsd -n -r -s 460800 -D 3 -F /var/run/gpsd.sock /dev/ttyGNSS1
 #   >> sudo systemctl start gpsd.service gpsd.socket
+# - 
 #
 # --------------------------
 #
@@ -26,7 +27,6 @@
 #
 #   open_port
 #   log_telemetry
-#   ctrlc
 #   print_help
 #   parse_command_line
 #   reduce
@@ -34,7 +34,6 @@
 #   eval_packet
 #   add_cksum
 #   write_max
-#   request_reg_states
 #   main_loop
 #
 # --------------------------
@@ -44,11 +43,9 @@
 #
 # - commenting and housekeeping
 # - integrate tuner sock
-# - remove unneccessary class functions (self.clear)
-# - fix print functionality
+# - fix telemetry log rate issues
+# - add print functionality
 # - add cleanups and failsafe for gpsd not connecting
-
-# >> sudo gpsd -n -r -s 460800 -D 3 -F /var/run/gpsd.sock /dev/ttyGNSS1
 
 
 import os
@@ -56,8 +53,6 @@ import time
 import socket
 import threading
 from datetime import datetime, timezone
-import signal
-import sys
 import numpy as np
 import csv
 
@@ -69,17 +64,13 @@ SOCKET_PATH = '/tmp/afe_service.sock'  # Path for comms with afe.py
 global device
 global rate
 global new_run
-
-global gpsd_in
-global gpsd_out
+global gpsd
 
 device = '/dev/ttyGNSS1'
 rate = 60
 
 def send_nmea_command(cmd_str):
-
-  device = "/dev/ttyGNSS1"
-    
+  
   if not cmd_str.endswith("\r\n"):
     cmd_str += "\r\n"
 
@@ -107,14 +98,6 @@ class Telemetry:
       self.registers = []
       self.RTCtime = None
 
-    def add_telem(self, data):
-
-      self.telem.append(data)
-
-    def add_registers(self, data):
-
-      self.registers.append(data)
-
     def request_telem(self):
 
       self.telem.clear()
@@ -125,13 +108,18 @@ class Telemetry:
       print("SENDING: ", msg)
       send_nmea_command(msg)
 
-    def size(self):
-        return len(self.telem)
+    def request_registers(self):
+
+      self.registers.clear()
+
+      msg_draft = "$MAX?*"
+      msg = add_cksum(msg_draft)
+      send_nmea_command(msg)
+      print("SENDING: ", msg)
 
     def print(self):
 
-      request_reg_states()
-
+      self.request_registers()
       self.request_telem()
 
       return np.stack(self.telem, self.registers)
@@ -139,12 +127,10 @@ class Telemetry:
     def log(self):
 
         global new_run
-
         global path
 
         self.request_telem()
-
-        request_reg_states()
+        self.request_registers()
 
         start = time.monotonic()
         wait = 0
@@ -158,11 +144,9 @@ class Telemetry:
         t = datetime.fromtimestamp(self.RTCtime, tz=timezone.utc)
         timestamp = t.strftime("%Y-%m-%d_%H:%M:%S")
 
-        if new_run is True: 
-          base = "/data/telemetry_log/temp"                 #TEMPORARY
-          #base = "/data/telemetry_log"                     #PERMANENT
-          folder_name = f"TEMP{timestamp}"                  #TEMPORARY
-          #folder_name = f"mep-telemetry-log_{timestamp}"   #PERMANENT
+        if new_run is True:
+          base = "/data/telemetry_log"
+          folder_name = f"mep-telemetry-log_{timestamp}"
           path = os.path.join(base, folder_name)
           os.makedirs(path, exist_ok=True)
           new_run = False
@@ -186,7 +170,7 @@ class Telemetry:
 
           start = time.monotonic()
           wait = 0
-          while self.size() < 4 and wait < 0.5:
+          while len(self.telem) < 4 and wait < 0.5:
             wait = time.monotonic() - start
             time.sleep(0.001)
 
@@ -238,9 +222,21 @@ class Telemetry:
             print(row)
 
         print("Telemetry logged at: ", filename) # /data/metadata
-        print("ELAPSED TIME = " + str(time.monotonic() - start_time) + 's')
 
-global_telemetry = Telemetry()
+def start_command_server():
+
+  try:
+    os.remove(SOCKET_PATH)
+  except OSError:
+    pass
+
+  server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+  server.bind(SOCKET_PATH)
+  server.listen(1)
+
+  while True:
+    conn, _ = server.accept()
+    threading.Thread(target=handle_commands, args=(conn,), daemon=True).start()
 
 def handle_commands(conn):
 
@@ -281,24 +277,9 @@ def handle_commands(conn):
 
   conn.close()
 
-def start_command_server():
-
-  try:
-    os.remove(SOCKET_PATH)
-  except OSError:
-    pass
-
-  server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  server.bind(SOCKET_PATH)
-  server.listen(1)
-
-  while True:
-    conn, _ = server.accept()
-    threading.Thread(target=handle_commands, args=(conn,), daemon=True).start()
-
 def gpsd_monitor():
 
-  msg = gpsd_in.makefile('r', encoding='ascii', newline='\n')
+  msg = gpsd.makefile('r', encoding='ascii', newline='\n')
   _ = msg.readline()
 
   for line in msg:          
@@ -326,7 +307,7 @@ def gpsd_monitor():
           print("TIME: ", global_telemetry.RTCtime)
 
     elif line.startswith('$PMIT') and '$PMITSR' not in line:
-      global_telemetry.add_telem(line)
+      global_telemetry.telem.append(line)
 
     elif line.startswith('$PMAX'):
       split = line.split(',')
@@ -334,15 +315,11 @@ def gpsd_monitor():
         reg_row = []
         for col in range(10):
           reg_row.append(int(split[row][col]))
-        global_telemetry.add_registers(reg_row)
+        global_telemetry.registers.append(reg_row)
 
     else:
       print("unidentified message")
       continue
-            
-def ctrlc(a,b):
-
-  sys.exit(0)
 
 def nmea_to_epoch(nmea):
 
@@ -506,31 +483,20 @@ def write_max(block, channel, addr, bit):
 
   return
 
-def request_reg_states():
-
-  global_telemetry.registers.clear()
-  msg_draft = "$MAX?*"
-  msg = add_cksum(msg_draft)
-  send_nmea_command(msg)
-  print("SENDING: ", msg)
-
-  return
-
 def tick():
 
   global rate
 
   print("Periodic log:")
   global_telemetry.log()
-  threading.Timer(rate-1, tick).start() #rate offset will need to vary as the script is updated, likely rate -1
+  threading.Timer(rate-1, tick).start() # rate offset will need to vary as the script is updated, likely rate-1
 
 def init_all():
 
-  global gpsd_in
-  global gpsd_out
+  global gpsd
 
-  gpsd_in = socket.create_connection(("127.0.0.1", 2947))
-  gpsd_in.sendall(b'?WATCH={"enable":true, "raw":1};\n')
+  gpsd = socket.create_connection(("127.0.0.1", 2947))
+  gpsd.sendall(b'?WATCH={"enable":true, "raw":1};\n')
 
   threading.Thread(target=start_command_server, daemon=True).start()
   monitor = threading.Thread(target=gpsd_monitor, daemon=False)
@@ -540,20 +506,15 @@ def init_all():
 
 def main():
 
-  global rate
-
-  signal.signal(signal.SIGINT, ctrlc) # for control c
-
   print("Initial Log:")
+
+  global_telemetry = Telemetry()
   
   global_telemetry.log()
 
   threading.Timer(rate, tick).start()
 
 if __name__ == '__main__':
-
-  global start_time
-  start_time = time.monotonic()
 
   new_run = True
 
