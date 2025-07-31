@@ -6229,121 +6229,126 @@ def run_mode(mode,           # the vector
     do_acc(data_cnt=1,debug_f=debug_f)
     do_gyro(data_cnt=1,debug_f=debug_f)
 
+    _,gps_start_draft = add_cksum("$PGPS*") 
+    gps_start = gps_start_draft + "\r\n"
+
+    _,gps_end_draft = add_cksum("$PGPN*") 
+    gps_end = gps_end_draft + "\r\n"
+
     while True:
 
       ublox = uart1.read()
       if ublox:
+        start_time = supervisor.ticks_ms()
+        uart0.write(gps_start)
         uart0.write(ublox)
+        uart0.write(gps_end)
         uart1.reset_input_buffer()
 
-      line = uart0.readline()
-      if line:
-        try:
-          lineStr = line.decode()
-          print(lineStr)
-        except UnicodeError:
-          continue
+      if supervisor.ticks_ms() - start_time < 600: # Ensures instructions wont still be processing while
+                                                   # new nmea is ready to keep TOFF constant
+        line = uart0.readline()
+        if line:
+          try:
+            lineStr = line.decode()
+            print(lineStr)
+          except UnicodeError:
+            continue
 
-        #   ----------------------
-        #   NMEA command vectors
-        #   -----------------------
+          #   ----------------------
+          #   NMEA command vectors
+          #   -----------------------
 
-        if (lineStr[0:7] == "$TELEM?"):
-          
-          run_mode(1,1,debug_f=False)
-          run_mode(8,1,debug_f=False)
-          run_mode(9,1,debug_f=False)
-          do_acc(data_cnt=1,debug_f=False)
-          do_gyro(data_cnt=1,debug_f=False)
+          if (lineStr[0:7] == "$TELEM?"):
 
-          msg_draft = "$PTEL*"
-          _,msg = add_cksum(msg_draft) 
-          uart0.write(msg + "\r\n")
+            run_mode(1,1,debug_f=False)
+            run_mode(8,1,debug_f=False)
+            run_mode(9,1,debug_f=False)
+            do_acc(data_cnt=1,debug_f=False)
+            do_gyro(data_cnt=1,debug_f=False)
 
-          send_telem(debug_f=debug_f)
-          print("REQUESTED TELEM DUMP")
+            msg_draft = "$PTEL*"
+            _,msg = add_cksum(msg_draft) 
+            uart0.write(msg + "\r\n")
 
-        if (lineStr[0:5] == "$MAX?"):
+            send_telem(debug_f=debug_f)
+            print("REQUESTED TELEM DUMP")
 
-          regs = [
-            g_shdw_max_misc,
-            g_shdw_max_tx1,
-            g_shdw_max_tx2,
-            g_shdw_max_rx1,
-            g_shdw_max_rx2,
-            g_shdw_max_rx3,
-            g_shdw_max_rx4,]
-          
-          bitArray = []
-          
-          for reg in regs:
-            _, str = maxList2str(reg)
-            bitArray.append(str.replace(",", ""))
-          regStr = ",".join(item for item in bitArray)
+          if (lineStr[0:5] == "$MAX?"):
 
-          print("MAX REQUESTED")
+            regs = [
+              g_shdw_max_misc,
+              g_shdw_max_tx1,
+              g_shdw_max_tx2,
+              g_shdw_max_rx1,
+              g_shdw_max_rx2,
+              g_shdw_max_rx3,
+              g_shdw_max_rx4,]
 
-          msg_draft = "$PMAX," + regStr + "*"
-          _,msg = add_cksum(msg_draft) 
-          uart0.write(msg + "\r\n")
-          print("WRITING REG: ", msg)
+            bitArray = []
+
+            for reg in regs:
+              _, str = maxList2str(reg)
+              bitArray.append(str.replace(",", ""))
+            regStr = ",".join(item for item in bitArray)
+
+            print("MAX REQUESTED")
+
+            msg_draft = "$PMAX," + regStr + "*"
+            _,msg = add_cksum(msg_draft) 
+            uart0.write(msg + "\r\n")
+            print("WRITING REG: ", msg)
 
 
-        elif (lineStr[0:6] == "$PMITT"):     
-          err_code,cmd_code,extra = handle_time_cmd(lineStr)  # set time         
-          if (err_code != 0):
-            send_NMEA_err(cmd_code,err_code)       # send error message
+          elif (lineStr[0:6] == "$PMITT"):     
+            err_code,cmd_code,extra = handle_time_cmd(lineStr)  # set time         
+            if (err_code != 0):
+              send_NMEA_err(cmd_code,err_code)       # send error message
+            else:
+              send_NMEA_ok(cmd_code,extra)           # send success message
+          #  # end else success
+          elif (lineStr[0:6] == "$PMITR"):     
+            err_code, cmd_code, extra = handle_rate_cmd(lineStr)   # set telemetry rate 
+            if (err_code != 0):
+              send_NMEA_err(cmd_code,err_code) # send error message
+            else:
+              send_NMEA_ok(cmd_code,extra)  # send success message
+            # end else success
+          #                     #0123456
+          elif (lineStr[0:7] == "$PMITMG"):     # set or query magnetometer parameters 
+            #
+            # expected 2nd param is "S" or "?"
+            #
+            err_code,cmd_code,qresp = handle_mag_cmd(lineStr,lineStr[7])
+            if (err_code == 0):
+              send_NMEA_ok(cmd_code,qresp)
+            else:
+              send_NMEA_err(cmd_code,err_code)    
+            # end else handle error
+          #                     #0123456
+          elif (lineStr[0:7] == "$PMITIM"):     # set or query imu parameters 
+            #
+            # expected 2nd param is "U" or "?"
+            #
+            err_code,cmd_code,qresp = handle_imu_cmd(lineStr,lineStr[7])
+            if (err_code == 0):
+              send_NMEA_ok(cmd_code,qresp)
+            else:
+              send_NMEA_err(cmd_code,err_code)    
+            # end else handle error
+            #                  #012345
+          elif ((lineStr[0:6] == "$PMITM") or (lineStr[0:6] == "$PMITX")): # 'M' or 'X" for MAX, XTn, XXn
+            #
+            # expected 2nd param is "A" or "T" or "R" followed by n=1..2|4 followed by optional '?'
+            #
+            err_code,cmd_code,qresp = handle_max_cmd(lineStr,lineStr[5:9])  # 'AX[?]', 'Tn[?]' 'Rn[?]'
+            if (err_code == 0):
+              send_NMEA_ok(cmd_code,qresp)
+            else:
+              send_NMEA_err(cmd_code,err_code)    
+            # end else handle error
           else:
-            send_NMEA_ok(cmd_code,extra)           # send success message
-        #  # end else success
-        elif (lineStr[0:6] == "$PMITR"):     
-          err_code, cmd_code, extra = handle_rate_cmd(lineStr)   # set telemetry rate 
-          if (err_code != 0):
-            send_NMEA_err(cmd_code,err_code) # send error message
-          else:
-            send_NMEA_ok(cmd_code,extra)  # send success message
-          # end else success
-        #                     #0123456
-        elif (lineStr[0:7] == "$PMITMG"):     # set or query magnetometer parameters 
-          #
-          # expected 2nd param is "S" or "?"
-          #
-          err_code,cmd_code,qresp = handle_mag_cmd(lineStr,lineStr[7])
-          if (err_code == 0):
-            send_NMEA_ok(cmd_code,qresp)
-          else:
-            send_NMEA_err(cmd_code,err_code)    
-          # end else handle error
-        #                     #0123456
-        elif (lineStr[0:7] == "$PMITIM"):     # set or query imu parameters 
-          #
-          # expected 2nd param is "U" or "?"
-          #
-          err_code,cmd_code,qresp = handle_imu_cmd(lineStr,lineStr[7])
-          if (err_code == 0):
-            send_NMEA_ok(cmd_code,qresp)
-          else:
-            send_NMEA_err(cmd_code,err_code)    
-          # end else handle error
-          #                  #012345
-        elif ((lineStr[0:6] == "$PMITM") or (lineStr[0:6] == "$PMITX")): # 'M' or 'X" for MAX, XTn, XXn
-          #
-          # expected 2nd param is "A" or "T" or "R" followed by n=1..2|4 followed by optional '?'
-          #
-          err_code,cmd_code,qresp = handle_max_cmd(lineStr,lineStr[5:9])  # 'AX[?]', 'Tn[?]' 'Rn[?]'
-          if (err_code == 0):
-            send_NMEA_ok(cmd_code,qresp)
-          else:
-            send_NMEA_err(cmd_code,err_code)    
-          # end else handle error
-        else:
-          continue
-
-        #msg_draft = "$PGPS*"
-        #_,msg = add_cksum(msg_draft) 
-        #uart0.write(msg + "\r\n")
-
-  # end elif
+            continue
 
   if (instru_f or mode_f):
     print("mode=",mode,"dt=",supervisor.ticks_ms()-start_time)
