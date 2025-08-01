@@ -1,7 +1,6 @@
 #
 # MIT Haystack Observatory
-# bww 06-23-2025
-#
+# Ben Welchman 08-01-2025
 #
 import sys
 import traceback

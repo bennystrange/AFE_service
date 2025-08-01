@@ -1,6 +1,7 @@
 #
-#  mit haystack observatory
+#  MIT Haystack Observatory
 #  rps on or about 8/21/2024
+#  Ben Welchman 08-01-2025
 #
 
 """
@@ -6217,7 +6218,7 @@ def run_mode(mode,           # the vector
     ret2 = msg_cnt
 
 
-  elif (mode == 13):                 # VLA Experiment 2025
+  elif (mode == 13):                 # Operating mode for afe_service.py
 
     run_mode(3,128,debug_f=debug_f)    #  acc tare, debug = dump values
     run_mode(4,64,debug_f=debug_f)     #  gyro tare, debug = dump values
