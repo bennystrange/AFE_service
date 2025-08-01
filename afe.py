@@ -3,11 +3,17 @@
 # afe.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 07-01-2025
+# Ben Welchman 08-01-2025
 #
 # --------------------------
 #
 # List of Functions:
+#
+#   send_command
+#   print_help
+#   parse_command_line
+#   update_reg_states
+#   main
 #
 # --------------------------
 

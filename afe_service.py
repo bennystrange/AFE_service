@@ -3,7 +3,7 @@
 # afe_service.py
 #
 # MIT Haystack Observatory
-# Ben Welchman 07-31-2025
+# Ben Welchman 08-01-2025
 #
 # --------------------------
 #
@@ -12,7 +12,7 @@
 # - gpsd must be initialized before afe_service.py
 #     >> sudo systemctl start gpsd.service gpsd.socket
 #
-# - /etc/default/gpsd must include:
+# - /opt/ansible/files/gpsd must include:
 #
 #    # Devices gpsd should collect to at boot time.
 #    # They need to be read/writeable, either by user gpsd or the group dialout.
@@ -24,9 +24,30 @@
 #    # Automatically hot add/remove USB GPS devices via gpsdctl
 #    USBAUTO="false"
 #
-# - gpsd must be run with:
-#   >> sudo gpsd -n -r -s 460800 -D 3 -F /var/run/gpsd.sock /dev/ttyGNSS1
-#   >> sudo systemctl start gpsd.service gpsd.socket
+# - /opt/ansible/gpsd.yml must include the following tasks 
+#   AFTER "Deploy gpsd default configuration" and
+#   BEFORE "Enable gpsd.service":
+#
+#   - name: Add mepuser to gpsd group
+#     user:
+#       name: "mepuser"
+#       groups: "gpsd"
+#       append: true
+#        
+#   - name: Create systemd directory for gpsd.socket
+#     file:
+#       path: /etc/systemd/system/gpsd.socket.d
+#       state: directory
+#       mode: '0755'
+#
+#   - name: Make gpsd.socket world-writable
+#     copy:
+#       dest: /etc/systemd/system/gpsd.socket.d/override.conf
+#       mode: '0644'
+#       content: |
+#         [Socket]
+#         SocketMode=0666
+#
 #
 # --------------------------
 #
@@ -38,7 +59,6 @@
 #   print
 #   log
 #
-# --------------------------
 #
 # List of Functions:
 #
@@ -59,8 +79,12 @@
 # Future work:
 #
 # - Add tuner status to telemetry
-# - commenting and housekeeping
-# - add print functionality
+# - Documentation and housekeeping
+# - Integrate commands for:
+#   - manually set or query time
+#   - set or query magnetometer parameters
+#   - set or query imu parameters
+#   - reset/re-tare magnetometer or imu
 #
 # --------------------------
 
@@ -143,7 +167,7 @@ class Telemetry:
       self.request_registers()
 
       telem_in_progress = True
-      telem_in_progress = True
+      regs_in_progress = True
 
       all_items = []
 
@@ -174,7 +198,7 @@ class Telemetry:
       for row in range(7):
           
         if row == 0:
-          tag = "MAINREG: "
+          tag = "MAINREG:"
 
         elif row in (1, 2):
           idx = str(row)
@@ -284,25 +308,17 @@ class Telemetry:
             writer.writerow(line)
             line = []
 
-          '''
-          for row in self.telem:
-            print(row)
-          for row in self.gps:
-            print(row)
-          for row in self.registers:
-            print(row)
-          '''
-
         print("Telemetry logged at: ", filename)
 
 global_telemetry = Telemetry()
 
 def start_command_server():
 
-  try:
-    os.remove(SOCKET_PATH)
-  except OSError:
-    pass
+  if os.path.exists(SOCKET_PATH):
+    try:
+      os.remove(SOCKET_PATH)
+    except OSError:
+      raise
 
   server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
   server.bind(SOCKET_PATH)
@@ -335,8 +351,6 @@ def handle_commands(conn):
     response = f"All Telemetry:\n"
     for row in all_items:
       response = response + row + "\n"
-
-    print(response)
     conn.sendall(response.encode('ascii'))
 
   elif block == 4:
