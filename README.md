@@ -29,12 +29,9 @@ This repository contains instructions for configuring and running the AFE servic
     # Automatically hot add/remove USB GPS devices via gpsdctl
     USBAUTO="false"
   ```
-- `/opt/ansible/gpsd.yml` must include the following tasks
+- `/opt/ansible/gpsd.yml` must include the following tasks **after** "Deploy gpsd default configuration" and **before** "Enable gpsd.service":
 
   ```
-   AFTER "Deploy gpsd default configuration" and
-   BEFORE "Enable gpsd.service":
-
    - name: Add mepuser to gpsd group
      user:
        name: "mepuser"
@@ -54,6 +51,7 @@ This repository contains instructions for configuring and running the AFE servic
        content: |
          [Socket]
          SocketMode=0666
+  
    - name: Install afe.py into /usr/local/bin
      copy:
        src: /opt/mep-examples/scripts/afe.py
