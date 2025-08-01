@@ -11,7 +11,7 @@ This repository contains instructions for configuring and running the AFE servic
 
 ### ublox ZED-F9O-00B
 
-- ublox must be configured according to `/opt/mep-examples/scripts/ubxconfig.py` via the GNSS USB port on the AFE
+- ublox must be configured according to `/opt/mep-examples/scripts/ubxconfig.py` [here](https://github.com/spectrumx/mep-examples/blob/main/scripts/ubxconfig.py) via the GNSS USB port on the AFE
 - **CFG-UART1-BAUDRATE must be 1350000**
 
 ### Nvidia Jetson
