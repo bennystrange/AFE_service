@@ -16,7 +16,7 @@ This repository contains instructions for configuring and running the AFE servic
 
 ### Nvidia Jetson
 
-- /opt/ansible/files/gpsd must include:
+- `/opt/ansible/files/gpsd` must include:
    
   ```
     # Devices gpsd should collect to at boot time.
@@ -29,7 +29,7 @@ This repository contains instructions for configuring and running the AFE servic
     # Automatically hot add/remove USB GPS devices via gpsdctl
     USBAUTO="false"
   ```
-- /opt/ansible/gpsd.yml must include the following tasks
+- `/opt/ansible/gpsd.yml` must include the following tasks
 
   ```
    AFTER "Deploy gpsd default configuration" and
