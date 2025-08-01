@@ -67,7 +67,7 @@ This repository contains instructions for configuring and running the AFE servic
 From anywhere, run `afe`
 
 ```
-Tools:\n\n"
+Tools:
 >> afe  [-h]  [-p]  [-l]  [-r <logging rate>]
   -h, --help         Show this help message and exit
   -p, --print        Print the current telemetry and register states
