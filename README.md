@@ -6,12 +6,12 @@ This repository contains instructions for configuring and running the AFE servic
 
 ### RP2040
 
-- RP2040 must be flashed with [Circuit Python 9.2.8](https://circuitpython.org/board/raspberry_pi_pico/) via the RP2040 USB port on the AFE.
+- RP2040 must be flashed with [Circuit Python 9.2.8](https://circuitpython.org/board/raspberry_pi_pico/) via the RP2040 USB port on the AFE
 - RP2040 must contain all the files in `CIRCUITPY`
 
 ### ublox ZED-F9O-00B
 
-- ublox must be configured according to `/opt/mep-examples/scripts/ubxconfig.py`
+- ublox must be configured according to `/opt/mep-examples/scripts/ubxconfig.py` via the GNSS USB port on the AFE
 - **CFG-UART1-BAUDRATE must be 1350000**
 
 ### Nvidia Jetson
