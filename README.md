@@ -86,7 +86,7 @@ Manual Reguster Programming:
   <block>
      -m, --main           Main register (trigs, ebias, pps sel, ref sel, antenna sel)
      -tx1, tx2            TX registers (blank sel, filter bypass)
-    -rx1, rx2, rx2, rx4  RX registers (chan bias, rf trig, filter byp, amp byp, atten)
+     -rx1, rx2, rx2, rx4  RX registers (chan bias, rf trig, filter byp, amp byp, atten)
 
   <addr>
      Register address: 0-9
