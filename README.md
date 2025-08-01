@@ -7,7 +7,7 @@ This repository contains instructions for configuring and running the AFE servic
 ### RP2040
 
 - RP2040 must be flashed with [Circuit Python 9.2.8](https://circuitpython.org/board/raspberry_pi_pico/) via the RP2040 USB port on the AFE
-- RP2040 must contain all the files in `CIRCUITPY`
+- RP2040 must contain all the files in [CIRCUITPY](https://github.com/bennystrange/AFE_service/tree/main/CIRCUITPY)
 
 ### ublox ZED-F9O-00B
 
