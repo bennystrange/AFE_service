@@ -2,14 +2,7 @@
 
 This repository contains instructions for configuring and running the AFE service on the MEP REV 1.00
 
-<table>
-<tr>
-<td>
 <img src="MEP.png" alt="MEP" width="100%">
-</td>
-</tr>
-</table>
-
 
 ## Dependencies
 
