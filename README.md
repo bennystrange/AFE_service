@@ -2,6 +2,8 @@
 
 This repository contains instructions for configuring and running the AFE service on the MEP REV 1.00
 
+<img src="MEP.png" alt="MEP">
+
 ## Dependencies
 
 ### RP2040
